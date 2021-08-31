@@ -7,9 +7,9 @@ import {
   Order,
 } from "opensea-js/lib/types";
 // import BigNumber from "bignumber.js";
-import { Container, Row, Col, Card, Button, Table, } from "react-bootstrap";
+import { Container, Row, Col, Card, Button, Table } from "react-bootstrap";
 import "bootstrap/dist/css/bootstrap.min.css";
-import axios from 'axios';
+import axios from "axios";
 
 import Web3Modal from "web3modal";
 // @ts-ignore
@@ -67,6 +67,43 @@ const SBalances = styled(SLanding)`
 
 type tOrders = OrderJSON[];
 
+enum CardNames {
+  MinBid = "Minimum Bid",
+  TopBid = "Top Bid",
+  CurrentPrice = "Current Price",
+  HighestOffer = "Highest offer",
+  NoOffers = "No offers",
+}
+
+enum PaymentTokens {
+  eth = "ETH",
+  weth = "WETH",
+}
+
+interface IUniqlyOffer {
+  price: string;
+  paymentToken: PaymentTokens;
+  expiration: string;
+  fromAddress: string;
+}
+
+interface IUniqlyAsset {
+  cardName: CardNames | null;
+  name: string;
+  ownersAddress: string;
+  description: string;
+  collectionName: string;
+  tokenId: string;
+  cardValue: string | null;
+  cardPaymentToken: string | null;
+  cardVerifiedOwnersName: string | null;
+  cardExpirationDate: string | null;
+  cardReservePrice: string | null;
+  imageUrl: string;
+  buyOffers: IUniqlyOffer[] | null;
+  sellOffers: IUniqlyOffer[] | null;
+}
+
 interface IAppState {
   fetching: boolean;
   address: string;
@@ -79,11 +116,11 @@ interface IAppState {
   asset: OpenSeaAsset | null;
   info: any | null;
   name: string | null;
-  image: string;
   isItemOwner: boolean | null;
   orders: tOrders | any;
   seaport: OpenSeaPort | undefined;
   events: Object[] | null;
+  uniqlyAsset: IUniqlyAsset | null;
 }
 
 const INITIAL_STATE: IAppState = {
@@ -98,12 +135,11 @@ const INITIAL_STATE: IAppState = {
   asset: null,
   info: null,
   name: "",
-  image:
-    "https://lh3.googleusercontent.com/DBD8vFv2QZ-ZrJ4jKH2lVwrJxiw4qFw2ntwmT6Ly_MrXoc4HLjZleHprxpfSCPX6_Sw7h-rIFVJ8zluRKqWtFnbvk04NU8nUsxUHdg=s128",
   isItemOwner: null,
   seaport: undefined,
   orders: [],
-  events: null
+  events: null,
+  uniqlyAsset: null,
 };
 
 class App extends React.Component<any, any> {
@@ -161,23 +197,165 @@ class App extends React.Component<any, any> {
   };
 
   public getOSItem = async () => {
+    const itemInfo = await this.state.seaport!.api.getAsset(asset);
+
+    await this.setState({asset:itemInfo});
+
+    console.log(itemInfo);
+
     const address = this.provider.selectedAddress
       ? this.provider.selectedAddress
       : this.provider?.accounts[0];
 
-    const itemInfo = await this.state.seaport!.api.getAsset(asset);
-    await this.setState({ asset: itemInfo });
+    let cardName: CardNames = CardNames.NoOffers;
+    let cardValue: string | null = null;
 
-    await this.setState({ name: itemInfo.name });
-    await this.setState({ image: itemInfo.imageUrl });
+    if (itemInfo.sellOrders && itemInfo.sellOrders![0]) {
+      if (!itemInfo.sellOrders![0].waitingForBestCounterOrder) {
+        cardName = CardNames.CurrentPrice;
+        cardValue = Web3Utils.fromWei(
+          Math.min
+            .apply(
+              Math,
+              itemInfo.sellOrders!.map(function(o) {
+                return o.currentPrice;
+              })
+            )
+            .toString(),
+          "ether"
+        );
+      } else if (
+        Math.max.apply(
+          Math,
+          itemInfo.buyOrders!.map(function(o) {
+            return o.basePrice;
+          })
+        ) > itemInfo.sellOrders![0].currentPrice!
+      ) {
+        cardName = CardNames.TopBid;
+        cardValue = Web3Utils.fromWei(
+          Math.max
+            .apply(
+              Math,
+              itemInfo.buyOrders!.map(function(o) {
+                return o.basePrice;
+              })
+            )
+            .toString(),
+          "ether"
+        );
+      } else {
+        cardName = CardNames.MinBid;
+        cardValue = Web3Utils.fromWei(
+          Math.min
+            .apply(
+              Math,
+              itemInfo.sellOrders!.map(function(o) {
+                return o.currentPrice;
+              })
+            )
+            .toString(),
+          "ether"
+        );
+      }
+    } else {
+      if (itemInfo.buyOrders && itemInfo.buyOrders![0]) {
+        cardName = CardNames.HighestOffer;
+        cardValue = Web3Utils.fromWei(
+          Math.max
+            .apply(
+              Math,
+              itemInfo.buyOrders!.map(function(o) {
+                return o.basePrice;
+              })
+            )
+            .toString(),
+          "ether"
+        );
+      }
+    }
 
-    const isOwner = itemInfo.owner.address === address;
+    let cardExpirationDate: string | null = null;
+    // if(cardName===CardNames.TopBid){
+    //   const winningOrder = itemInfo.buyOrders!.find(order => (Web3Utils.fromWei(order.basePrice.toString())).toString() === cardValue);
+    //   console.log(winningOrder);
+    //   cardExpirationDate = new Date(
+    //     winningOrder!.expirationTime.mul(1000).toNumber()).toString();
+    // }
+    if (
+      itemInfo.sellOrders![0] &&
+      itemInfo.sellOrders![0].expirationTime.greaterThan(0)
+    ) {
+      const order = itemInfo.orders!.find(
+        (order) => order.basePrice === itemInfo.sellOrders![0].basePrice
+      );
+      cardExpirationDate = new Date(
+        order!.expirationTime.mul(1000).toNumber()
+      ).toString();
+    }
 
-    await this.setState({ isItemOwner: isOwner });
+    let cardReservePrice: string | null = null;
+    if (
+      itemInfo.sellOrders![0] &&
+      itemInfo.sellOrders![0].expirationTime &&
+      itemInfo.sellOrders![0].extra.greaterThan(0)
+    ) {
+      cardReservePrice = Web3Utils.fromWei(
+        itemInfo.sellOrders![0].extra!.toString(),
+        "ether"
+      );
+    }
 
-    console.log(this.state.asset);
+    let sellOffers: IUniqlyOffer[] = [];
+    if (itemInfo.sellOrders) {
+      for (let i = 0; i < itemInfo.sellOrders!.length; i++) {
+        let offer: IUniqlyOffer = {
+          price: itemInfo.sellOrders![i]!.basePrice.toString(),
+          paymentToken: PaymentTokens.eth,
+          expiration: itemInfo.sellOrders![i]!.expirationTime.toString(),
+          fromAddress: itemInfo.sellOrders![i]!.makerAccount?.address!,
+        };
+        sellOffers.push(offer);
+      }
+    }
 
-    await this.getEvents();
+    let buyOrders: IUniqlyOffer[] = [];
+    if (itemInfo.buyOrders) {
+      for (let i = 0; i < itemInfo.buyOrders!.length; i++) {
+        let offer: IUniqlyOffer = {
+          price: itemInfo.buyOrders![i]!.basePrice.toString(),
+          paymentToken: PaymentTokens.eth,
+          expiration: itemInfo.buyOrders![i]!.expirationTime.toString(),
+          fromAddress: itemInfo.buyOrders![i]!.makerAccount?.address!,
+        };
+        buyOrders.push(offer);
+      }
+    }
+
+    let uniqlyAsset: IUniqlyAsset = {
+      cardName,
+      name: itemInfo.name,
+      ownersAddress: itemInfo.owner.address,
+      description: itemInfo.description,
+      tokenId: itemInfo.tokenId!,
+      collectionName: itemInfo.collection.name,
+      cardValue,
+      cardPaymentToken: "ETH",
+      cardVerifiedOwnersName: null,
+      cardExpirationDate,
+      cardReservePrice,
+      imageUrl: itemInfo.imageUrl,
+      buyOffers: buyOrders,
+      sellOffers,
+    };
+
+    await this.setState({ uniqlyAsset });
+    if (uniqlyAsset.ownersAddress === address) {
+      await this.setState({ isItemOwner: true });
+    }
+
+    setTimeout((async() => await this.getEvents()), 1000);  
+    console.log(uniqlyAsset);
   };
 
   public getAssets = async () => {
@@ -232,7 +410,33 @@ class App extends React.Component<any, any> {
     const offer = await this.state.seaport!.createBuyOrder({
       asset,
       accountAddress: address,
-      startAmount: 0.75,
+      startAmount: 1.1,
+    });
+
+    console.log(offer);
+  };
+
+  public acceptOffer = async () => {
+    const offer = await this.state.seaport!.fulfillOrder({
+      order: this.state.asset!.buyOrders![0]!,
+      accountAddress: this.state.address
+    });
+
+    console.log(offer);
+  }
+
+  public cancelOffer = async () => {
+    const address:string = this.provider.selectedAddress
+      ? this.provider.selectedAddress
+      : this.provider?.accounts[0];
+
+    const order:Order = this.state.asset!.buyOrders!.find(order => order.makerAccount!.address === address)!;
+
+    console.log(order);
+
+    const offer = await this.state.seaport!.cancelOrder({
+      order,
+      accountAddress: address
     });
 
     console.log(offer);
@@ -243,38 +447,41 @@ class App extends React.Component<any, any> {
       ? this.provider.selectedAddress
       : this.provider?.accounts[0];
 
-    const order: Order = this.state.asset?.sellOrders?.[0]!;
+    console.log(this.state.asset);
 
-    const transactionHash = await await this.state.seaport!.fulfillOrder({
+    const order: Order = this.state.asset!.sellOrders?.[0]!;
+
+    const transactionHash = await this.state.seaport!.fulfillOrder({
       order,
       accountAddress: address,
     });
 
     console.log(transactionHash);
+
   };
 
-  public getEvents  = async ()  => {
-    let res:any = [];
-    await axios.get('https://api.opensea.io/api/v1/events', {
-      params: {
-        asset_contract_address: asset.tokenAddress,
-        token_id:  asset.tokenId,
-        only_opensea: false,
-        offset:0,
-        limit:250
-      }
-    })
-      .then(function (response: any) {
+  public getEvents = async () => {
+    let res: any = [];
+    await axios
+      .get("https://rinkeby-api.opensea.io/api/v1/events", {
+        params: {
+          asset_contract_address: asset.tokenAddress,
+          token_id: asset.tokenId,
+          only_opensea: false,
+          offset: 0,
+          limit: 200,
+        },
+      })
+      .then(function(response: any) {
         res = response;
       })
-      .catch(function (error: any) {
+      .catch(function(error: any) {
         console.log(error);
       })
-      .then(function () {
-      });
-      await this.setState({ events: res.data.asset_events });
-      console.log(this.state.events)
-  }
+      .then(function() {});
+    await this.setState({ events: res.data.asset_events });
+    console.log(this.state.events);
+  };
 
   public sellItemOnOpenSea = async () => {
     const address = this.provider.selectedAddress
@@ -390,180 +597,238 @@ class App extends React.Component<any, any> {
                   </Col>
                 </Row>
 
-                {this.state.asset && (
+                {this.state.uniqlyAsset && (
                   <Container>
                     <Row>
                       <Col>
                         {/* Image */}
-                        <img src={this.state.asset.imageUrl} />
+                        <img src={this.state.uniqlyAsset?.imageUrl} />
                       </Col>
                       <Col>
                         {/* Collection name */}
                         <div>
-                          <b>{this.state.asset.collection.name}</b>
+                          <b>{this.state.uniqlyAsset?.collectionName}</b>
                         </div>
-
                         {/* Asset name */}
                         <h3 onClick={this.getAssets}>
-                          {this.state.asset.name}
+                          {this.state.uniqlyAsset?.name}
                         </h3>
-
                         {/* Owner */}
                         {this.state.isItemOwner ? (
                           <div>You're owner of this item</div>
                         ) : (
-                          <div>Owner is {this.state.asset.owner.address}</div>
+                          <div>
+                            Owner is {this.state.uniqlyAsset.ownersAddress}
+                          </div>
                         )}
-
-                        {/* CLEAR*/}
-                         {!this.state.asset.sellOrders![0] && !this.state.asset.buyOrders![0] && (
                         <Card>
-                          <Card.Header as="h5">No offers</Card.Header>
+                          <Card.Header as="h5">
+                            {this.state.uniqlyAsset.cardName}
+                          </Card.Header>
                           <Card.Body>
-                            <Button variant="primary" onClick={this.createOffer}>Create Offer</Button>
+                            <Card.Title>
+                              {this.state.uniqlyAsset.cardValue}{" "}
+                              {this.state.uniqlyAsset.cardValue &&
+                                this.state.uniqlyAsset.cardPaymentToken}
+                            </Card.Title>
+                            <Card.Text>
+                              {this.state.uniqlyAsset.cardExpirationDate &&
+                                "Sale ends: " &&
+                                this.state.uniqlyAsset.cardExpirationDate}
+                            </Card.Text>
+
+                            {/* Buttons */}
+
+                            {/* Owner */}
+                            {/* No sell orders */}
+                            {this.state.isItemOwner &&
+                              !this.state.uniqlyAsset.sellOffers && (
+                                <Button
+                                  variant="primary"
+                                  onClick={this.createOffer}
+                                >
+                                  Sell
+                                </Button>
+                              )}
+
+                            {/* Have sell orders */}
+                            {this.state.isItemOwner &&
+                              this.state.uniqlyAsset.sellOffers && (
+                                <div>
+                                  <Button
+                                    variant="primary"
+                                    onClick={this.createOffer}
+                                    className="m-1"
+                                  >
+                                    Lower price
+                                  </Button>
+                                  <Button
+                                    variant="secondary"
+                                    onClick={this.createOffer}
+                                    className="m-1"
+                                  >
+                                    Cancel Listing
+                                  </Button>
+                                </div>
+                              )}
+
+                            {/* Not Owner */}
+                            {/* Have no orders */}
+                            {!this.state.isItemOwner &&
+                              this.state.uniqlyAsset.cardName ===
+                                CardNames.NoOffers && (
+                                <div>
+                                  <Button
+                                    variant="primary"
+                                    onClick={this.createOffer}
+                                    className="m-1"
+                                  >
+                                    Make Offer
+                                  </Button>
+                                </div>
+                              )}
+
+                            {/* Have sell orders */}
+                            {!this.state.isItemOwner &&
+                              (this.state.uniqlyAsset.cardName ===
+                                CardNames.CurrentPrice ||
+                                this.state.uniqlyAsset.cardName ===
+                                  CardNames.HighestOffer) && (
+                                <div>
+                                  {this.state.uniqlyAsset.cardName ===
+                                CardNames.CurrentPrice  && <Button
+                                    variant="primary"
+                                    onClick={this.buyNow}
+                                    className="m-1"
+                                  >
+                                    Buy now
+                                  </Button> }
+                                  <Button
+                                    variant="secondary"
+                                    onClick={this.createOffer}
+                                    className="m-1"
+                                  >
+                                    Make offer
+                                  </Button>
+                                </div>
+                              )}
+
+                            {/* Have Bids */}
+                            {(!this.state.isItemOwner && (
+                              this.state.uniqlyAsset.cardName ===
+                                CardNames.MinBid ||
+                              this.state.uniqlyAsset.cardName ===
+                                CardNames.TopBid)  && 
+                                <div>
+                                  <Button
+                                    variant="primary"
+                                    onClick={this.createOffer}
+                                    className="m-1"
+                                  >
+                                    Place Bid
+                                  </Button>
+                                </div>
+                              )}
                           </Card.Body>
                         </Card>
-                          )}
-
-                        
-                        {/* BUY NOW */}
-                        {this.state.asset.sellOrders &&
-                          this.state.asset.sellOrders[0] && (
-                        <Card>
-                          <Card.Header as="h5">{this.state.asset.sellOrders![0].waitingForBestCounterOrder ? ((Math.max.apply(Math, this.state.asset!.buyOrders!.map(function(o) { return o.basePrice; })) > this.state.asset.sellOrders![0].currentPrice!) ? "Maximum bid" : "Minimum bid") : "Current Price"}</Card.Header>
-                          <Card.Body>
-                            <Card.Title>{((Math.max.apply(Math, this.state.asset!.buyOrders!.map(function(o) { return o.basePrice; })) > Math.min.apply(Math, this.state.asset!.sellOrders!.map(function(o) { return o.currentPrice; }))) ? Web3Utils.fromWei(Math.max.apply(Math, this.state.asset!.buyOrders!.map(function(o) { return o.basePrice; })).toString(),"ether"):Web3Utils.fromWei(Math.min.apply(Math, this.state.asset!.sellOrders!.map(function(o) { return o.currentPrice; })).toString(),"ether")) } ETH</Card.Title>
-                            {this.state.asset!.sellOrders![0].expirationTime.greaterThan(0) && (<Card.Text>
-                                  Expiration Date: {(new Date(this.state.asset!.sellOrders![0].expirationTime.mul(1000).toNumber())).toString()}
-                             </Card.Text>)}
-
-                             {this.state.asset!.sellOrders![0].expirationTime && this.state.asset!.sellOrders![0].extra.greaterThan(0) && (<Card.Text>
-                              Price goes down from {Web3Utils.fromWei(this.state.asset!.sellOrders![0].basePrice!.toString(), "ether")} to {Web3Utils.fromWei(this.state.asset!.sellOrders![0].extra!.toString(), "ether")} ETH 
-                             </Card.Text>)}
-
-                            <Button variant="primary m-2" onClick={this.buyNow}>Buy now</Button>
-                            <Button variant="secondary" onClick={this.createOffer}>Create Offer</Button>
-                          </Card.Body>
-                        </Card>
-                          )}
-
-                        {/* HIGHEST OFFER */}
-                        {!this.state.asset.sellOrders![0] && this.state.asset.buyOrders &&
-                          this.state.asset.buyOrders[0] && (
-                        <Card>
-                          <Card.Header as="h5">Highest offer</Card.Header>
-                          <Card.Body>
-                            <Card.Title>{Web3Utils.fromWei(Math.max.apply(Math, this.state.asset!.buyOrders!.map(function(o) { return o.basePrice; })).toString(), "ether")} ETH</Card.Title>
-                            <Button variant="secondary" onClick={this.createOffer}>Create Offer</Button>
-                          </Card.Body>
-                        </Card>
-                          )}
-
-                        {/* HIGHEST OFFER */}
-                        {!this.state.asset.sellOrders![0] && this.state.asset.buyOrders &&
-                          this.state.asset.buyOrders[0] && (
-                        <Card>
-                          <Card.Header as="h5">Minimum Bid</Card.Header>
-                          <Card.Body>
-                            <Card.Title>{Web3Utils.fromWei(Math.max.apply(Math, this.state.asset!.buyOrders!.map(function(o) { return o.basePrice; })).toString(), "ether")} ETH</Card.Title>
-                            <Button variant="secondary" onClick={this.createOffer}>Create Offer</Button>
-                          </Card.Body>
-                        </Card>
-                          )}
-
-                         {/* AUCTION WITHOUT ENDING PRICE */}
-                         {/* {this.state.asset.sellOrders &&
-                          this.state.asset.sellOrders[0] && (
-                          <Card>
-                            <Card.Header as="h5">Current Price</Card.Header>
-                            <Card.Body>
-                              <Card.Title>{Web3Utils.fromWei(this.state.asset!.sellOrders![0].currentPrice!.toString(), "ether")} ETH</Card.Title>
-                              <Card.Text>
-                                  With supporting text below as a natural lead-in to additional content.
-                                </Card.Text>
-                              <Button variant="primary m-2" onClick={this.buyNow}>Buy now</Button>
-                              <Button variant="secondary" onClick={this.createOffer}>Create Offer</Button>
-                            </Card.Body>
-                          </Card>
-                            )} */}
-
-                        Debug:
-                        {this.state.asset.sellOrders![0] && (<div>
-                        Sale kind: {this.state.asset!.sellOrders![0].saleKind}
-                        <br/>
-                        Waiting For Best Counter Offer: {this.state.asset!.sellOrders![0].waitingForBestCounterOrder ? "true" : "false"}
-                        </div>
-                        )
-                        }
-                        {/* {this.state.asset.sellOrders &&
-                          this.state.asset.sellOrders[0] && (
-                            <div>
-                              <h4>
-                                Actual price:{" "}
-                                {Web3Utils.fromWei(
-                                  new BigNumber(
-                                    this.state.asset.sellOrders[0].basePrice
-                                  ).toString(),
-                                  "ether"
-                                )}{" "}
-                                WETH{" "}
-                              </h4>
-                              {!this.state.isItemOwner &&
-                                this.state.asset.sellOrders[0] && (
-                                  <button onClick={this.buyNow}>Buy now</button>
-                                )}
-                            </div>
-                          )}
-                        {!this.state.isItemOwner ? (
-                          <button onClick={this.createOffer}>
-                            Create offer
-                          </button>
-                        ) : (
-                          <button onClick={this.sellItemOnOpenSea}>
-                            Sell item
-                          </button>
-                        )} */}
                       </Col>
-
-                      {/* <ul>
-                        {this.state.orders.map(
-                          (item: OrderJSON, index: number) => {
-                            return (
-                              <li key={index}>
-                                {item.side === 0 ? "Buy offer " : "Sell offer "}
-                                {"By: " + item.maker + " "}
-                                {"Price: " + item.basePrice + " "}
-                              </li>
-                            );
-                          }
-                        )}
-                      </ul> */}
                     </Row>
-                    {this.state.events && this.state.events[0] &&
-                    <Table>
-                    <thead>
-                        <tr>
-                          <th>Event</th>
-                          <th>Price</th>
-                          <th>From</th>
-                          <th>To</th>
-                          <th>Date</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                       {this.state.events!.map(
-                          (item: any, index: number) => {
-                            return (
-                        <tr key={item.id}>
-                          <td>{item.event_type}</td>
-                          <td>{item.event_type == "created" ? Web3Utils.fromWei(item.starting_price,"ether") : item.event_type === "successful" || item.event_type === "transfer" ? "-" : Web3Utils.fromWei(item.bid_amount, "ether")}</td>
-                          <td>{item.event_type == "successful" ? item.seller.address : item.from_account.address}</td>
-                          <td>{item.event_type == "successful" ? item.seller.address : item.event_type == "transfer" ? item.to_account.address : "-"}</td>
-                          <td>{item.created_date}</td>
-                        </tr>
-                            )})};
-                      </tbody>
-                    </Table>}
+
+                    <h4>Orders</h4>
+                    {this.state.uniqlyAsset.buyOffers &&
+                      this.state.uniqlyAsset.buyOffers[0] && (
+                        <Table>
+                          <thead>
+                            <tr>
+                              <th>Price</th>
+                              <th>Expiration</th>
+                              <th>From</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {this.state.uniqlyAsset.buyOffers!.map(
+                              (order: IUniqlyOffer, index: number) => {
+                                return (
+                                  <tr key={index}>
+                                    <td>{order.price}</td>
+                                    <td>{order.expiration} {order.fromAddress === this.state.address && <Button
+                                    variant="secondary"
+                                    size="sm"
+                                    onClick={this.cancelOffer}
+                                  >
+                                    Cancel
+                                  </Button>}
+                                  {this.state.isItemOwner && <Button
+                                    variant="secondary"
+                                    size="sm"
+                                    onClick={this.acceptOffer}
+                                  >
+                                    Accept
+                                  </Button>}
+                                  </td>
+                                    <td>{order.fromAddress}</td>
+                                  </tr>
+                                );
+                              }
+                            )}
+                          </tbody>
+                        </Table>
+                      )}
+
+                    <h4>History</h4>
+                    {this.state.events && this.state.events[0] && (
+                      <Table>
+                        <thead>
+                          <tr>
+                            <th>Event</th>
+                            <th>Price</th>
+                            <th>From</th>
+                            <th>To</th>
+                            <th>Date</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {this.state.events!.map(
+                            (item: any, index: number) => {
+                              return (
+                                <tr key={item.id}>
+                                  <td>{item.event_type}</td>
+                                  <td>
+                                    {item.event_type == "created"
+                                      ? item.starting_price
+                                      : item.event_type === "successful" ||
+                                        item.event_type === "transfer"
+                                      ? "-"
+                                      : Web3Utils.fromWei(
+                                          item.bid_amount
+                                            ? item.bid_amount
+                                            : "0",
+                                          "ether"
+                                        )}
+                                  </td>
+                                  <td>
+                                    {item.event_type == "successful"
+                                      ? item.seller.address
+                                      : item.from_account
+                                      ? item.from_account.address
+                                      : "-"}
+                                  </td>
+                                  <td>
+                                    {item.event_type == "successful"
+                                      ? item.winner_account.address
+                                      : item.event_type == "transfer"
+                                      ? item.to_account.address
+                                      : "-"}
+                                  </td>
+                                  <td>{item.created_date}</td>
+                                </tr>
+                              );
+                            }
+                          )}
+                          ;
+                        </tbody>
+                      </Table>
+                    )}
                   </Container>
                 )}
               </SLanding>
